@@ -1,0 +1,23 @@
+  htmlPage = F("HTTP/1.1 200 OK\r\n"
+               "Content-Type: text/html\r\n"
+               "Connection: close\r\n"  // the connection will be closed after completion of the response
+               "Refresh: 5\r\n"         // refresh the page automatically every 5 sec
+               "\r\n"
+               "<!DOCTYPE HTML>"
+               "<html>"
+               "KTY 0: ");
+  htmlPage += sensorValue0;
+  htmlPage += F("<br>ADC counts: ");
+  htmlPage += voltage0;
+  htmlPage += F("V<br>Temperature: ");
+  htmlPage += temperature;
+  htmlPage += F("&deg;C<br>");
+  /*
+  htmlPage += F("KTY 1: ");
+  htmlPage += sensorValue1;
+  htmlPage += F(" ADC counts = ");
+  htmlPage += voltage1;
+  htmlPage += F("V<br>");
+  */
+  htmlPage += F("</html>"
+                "\r\n");
