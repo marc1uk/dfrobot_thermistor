@@ -10,12 +10,21 @@
 // digital i/o pins operate at 5 volts and can provide or receive 20 mA (DO NOT EXCEED 40mA).
 // For receiving they have an internal pull-up resistor (disconnected by default) of 20-50 k ohm.
 
+// IMPORTANT: FIXME
+// LED_BUILTIN is digital pin 13. This is a PWM pin we currently use for PARALLEL FLOW control
+// the result is any BLINK commands ALSO impact the parallel flow solenoid valve!
+// For now, make BLINK do nothing, do not use LED_BUILTIN.
+// For future, move PARALLEL FLOW pin.
+// or we can override it to use the RX LED i guess
+#define LED_BUILTIN 17
+
 // I2C functions for controlling the Grove 4-channel relay
 #include <multi_channel_relay.h>
 
 // for blinking on-board LED
 #define LONG_DELAY 100
 #define SHORT_DELAY 10
+
 
 // apparently we need to use digital pin numbers (or names)
 // for PWM, even though we call 'analogWrite'
@@ -70,7 +79,7 @@ bool grove_connected = false;
 #define ANALOG_READ_MAX 1023
 
 // PWM duty cycle for a 8V holding voltage based on 24V rail voltage
-constexpr int VALVE_DEFAULT_DUTY_CYCLE = 100.*(8./24.);
+constexpr int VALVE_DEFAULT_DUTY_CYCLE = 100.*(5./24.);
 
 // valves will be enabled first at full voltage (100% PWM duty cycle ~24V)
 // then after some delay reduced to a 'holding' level (33% duty cycle ~8V)
@@ -172,6 +181,7 @@ void setup() {
 	
 	// initialise all outputs to low... is this best?
 	digitalWrite(LED_BUILTIN, LOW);
+	
 	digitalWrite(TUBE_FLOW_VALVES_PIN, LOW);
 	digitalWrite(PARALLEL_FLOW_VALVE_PIN, LOW);
 	digitalWrite(LAMP_DB15_ENABLE_PIN, LOW);
@@ -192,16 +202,20 @@ void setup() {
 
 void DoQuit(){
 	Blink(LONG_DELAY, 5);
-	// set all outputs to low
-	digitalWrite(TUBE_FLOW_VALVES_PIN, LOW);
-	digitalWrite(PARALLEL_FLOW_VALVE_PIN, LOW);
 	
+	// set all outputs to low
 	digitalWrite(LAMP_DB15_ENABLE_PIN, LOW);
 	digitalWrite(LAMP_SHUTTER_CONTROL_PIN, LOW);
 	digitalWrite(LAMP_UV_CONTROL_PIN, LOW);
 	digitalWrite(LAMP_VIS_CONTROL_PIN, LOW);
 	
 	switch_all_LEDs_off();
+	
+	// with the exception of flow control valves;
+	// toolchain may stop, but if we're using the pump,
+	// something needs to remain open (until we control the pump)
+	//digitalWrite(TUBE_FLOW_VALVES_PIN, LOW);
+	//digitalWrite(PARALLEL_FLOW_VALVE_PIN, LOW);
 	
 	tube_valves_opened = 0;
 	parallel_valves_opened = 0;
@@ -227,6 +241,10 @@ void switch_LED(int RELAY_CH, bool on){
 void switch_all_LEDs_off(){
 	// argument is a 4-bit mask
 	relay.channelCtrl(0);
+	// disable lamp - do we do this via shutter, or by turning the lamp off...? FIXME
+	//digitalWrite(LAMP_VIS_CONTROL_PIN,0);
+	//digitalWrite(LAMP_UV_CONTROL_PIN,0);
+	digitalWrite(LAMP_SHUTTER_CONTROL_PIN,0);
 	return;
 }
 
@@ -293,7 +311,8 @@ void loop() {
 	if(Serial.available()){
 		Blink(SHORT_DELAY, 3);
 		// read the command
-		String command = Serial.readString(); // reads until timeout
+		//String command = Serial.readString(); // reads until timeout
+		String command = Serial.readStringUntil('\n'); // reads until terminator, or timeout
 		command.trim();  // trim leading and trailing whitespace
 		
 		// loop over pairs of key and value
@@ -304,7 +323,7 @@ void loop() {
 			pos = command.indexOf(' ');
 			if(verbosity) Serial.println(String("key pos ")+pos);
 			String key = command.substring(0,pos);
-			command = command.substring(pos+1); // if no end specified, until end of string
+			if(pos>0) command = command.substring(pos+1); // if no end specified, until end of string
 			command.trim();
 			if(verbosity) Serial.println("GOT KEY '"+key+"', command is now '"+command+"'");
 			
@@ -339,9 +358,19 @@ void loop() {
 			} else if(key=="WHITE"){
 				type=0;
 				pin=LEDW7E_CH;
+			} else if(key.substring(0,5)=="RELAY"){
+				char relaynum = key[5];
+				if(!isDigit(relaynum)){
+					Serial.println("Err: invalid relay '"+key+"'");
+					continue;
+				}
+				type=0;
+				// relay commands use relays 1 - 4, but we'll accept
+				// sensible numbers 0-3.
+				pin=atoi(&relaynum) + 1;
 			}
 			// type 1: ON/OFF via digitalWrite
-			else if(key=="D2"){
+			else if(key=="DEUTERIUM"){
 				type=1;
 				pin = LAMP_UV_CONTROL_PIN;
 			}
@@ -349,36 +378,46 @@ void loop() {
 				type=1;
 				pin = LAMP_VIS_CONTROL_PIN;
 			}
-			// type 2: ENABLE/DISABLE
-			else if(key=="LAMP"){
-				// this doesn't actually turn the lamp on, but enables DB15 control...
-				type=2;
+			else if(key=="LAMP_DB15"){
+				// enables shutter & lamp control via DB15 on the back
+				type=1;
 				pin=LAMP_DB15_ENABLE_PIN;
 			}
-			// type 3: OPEN/CLOSE
 			else if(key=="LAMP_SHUTTER"){
-				type=3;
+				type=1;
 				pin = LAMP_SHUTTER_CONTROL_PIN;
 			}
 			else if(key=="GAD_ARM"){
-				type=3;
+				type=1;
 				pin=GAD_ARM_SHUTTER_PIN;
 			}
 			else if(key=="REF_ARM"){
-				type=3;
+				type=1;
 				pin=REF_ARM_SHUTTER_PIN;
 			}
+			// type 2: valve control, requires functions to lower to holding voltage
 			else if(key=="TUBE" || key=="PARALLEL"){
-				type=3;
+				type=2;
 			}
-			else if(key=="Hello"){
+			// type 3: getters/misc
+			else if(key=="HELLO"){
+				type=3;
 				Serial.println("Hello!");
 			}
 			else if(key=="QUIT"){
+				type=3;
+				Serial.println("Quitting");
 				DoQuit();
 				break;
 			}
+			else if(key=="OFF"){
+				type=3;
+				Serial.println("Disabling all lights");
+				switch_all_LEDs_off();
+				break;
+			}
 			else if(key=="GROVE"){
+				type=3;
 				if(connectToGrove()){
 					Serial.println("OK");
 				} else {
@@ -386,6 +425,7 @@ void loop() {
 				}
 			}
 			else if(key=="LED_TEMP"){
+				type=3;
 				double temp = GetLEDTemp();
 				Serial.println(String{"LED Temp: "}+temp);
 			}
@@ -398,44 +438,28 @@ void loop() {
 				} else {
 					command = "";
 				}
+				continue;
+			}
+			if(type!=3 && val!="ENABLE" && val!="DISABLE"){
+				Serial.println("Err: "+key+": Invalid value '"+val+"', use 'ENABLE' or 'DISABLE'");
+				continue;
+			} else if(type!=3) {
+				Serial.println("Setting "+key+" to "+val);
 			}
 			
 			Blink(LONG_DELAY, type);
 			
 			// parse, validate & enact command based on type
-			if(type==0 || type==1){
-				if(val!="ON" && val!="OFF"){
-					Serial.println("Err: "+key+": Invalid value '"+val+"', use 'ON' or 'OFF'");
-				} else {
-					Serial.println("Setting "+key+" to "+val);
-					if(type==0) switch_LED(pin, (val=="ON"));
-					else digitalWrite(pin,(val=="ON"));
-				}
-			}
+			if(type==0) switch_LED(pin, (val=="ENABLE"));
+			
+			else if(type==1) digitalWrite(pin,(val=="ENABLE"));
 			
 			else if(type==2){
-				if(val!="ENABLE" && val!="DISABLE"){
-					Serial.println("Err: "+key+": Invalid value '"+val+"', use 'ENABLE' or 'DISABLE'");
-				} else {
-					Serial.println("Setting "+key+" to "+val);
-					digitalWrite(pin, (val=="ENABLE"));
-				}
-			}
-			
-			else if(type==3){
-				if(val!="OPEN" && val!="CLOSE"){
-					Serial.println("Err: "+key+": Invalid value '"+val+"', use 'OPEN' or 'CLOSE'");
-				} else {
-					Serial.println("Setting "+key+" to "+val);
-					if(key=="TUBE"){
-						// TODO add support for specifying duty cycle
-						switch_TUBEVALVES(val=="OPEN");
-					} else if(key=="PARALLEL"){
-						switch_PARALLELVALVE(val=="OPEN");
-					} else {
-						// else a shutter
-						digitalWrite(pin, (val=="OPEN"));
-					}
+				if(key=="TUBE"){
+					// TODO add support for specifying duty cycle
+					switch_TUBEVALVES(val=="ENABLE");
+				} else if(key=="PARALLEL"){
+					switch_PARALLELVALVE(val=="ENABLE");
 				}
 			}
 			
