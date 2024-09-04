@@ -10,93 +10,124 @@
 // digital i/o pins operate at 5 volts and can provide or receive 20 mA (DO NOT EXCEED 40mA).
 // For receiving they have an internal pull-up resistor (disconnected by default) of 20-50 k ohm.
 
-// IMPORTANT: FIXME
-// LED_BUILTIN is digital pin 13. This is a PWM pin we currently use for PARALLEL FLOW control
-// the result is any BLINK commands ALSO impact the parallel flow solenoid valve!
-// For now, make BLINK do nothing, do not use LED_BUILTIN.
-// For future, move PARALLEL FLOW pin.
-// or we can override it to use the RX LED i guess
-#define LED_BUILTIN 17
-
 // I2C functions for controlling the Grove 4-channel relay
 #include <multi_channel_relay.h>
+
+// IMPORTANT:
+// LED_BUILTIN is digital pin 13.
+#define LED_BUILTIN 13
 
 // for blinking on-board LED
 #define LONG_DELAY 100
 #define SHORT_DELAY 10
 
-
 // apparently we need to use digital pin numbers (or names)
 // for PWM, even though we call 'analogWrite'
 // https://forum.arduino.cc/t/someone-refresh-my-memory-on-how-pin-numbers-work/390682/6
 // N.B. pin 12 is marked on the silkscreen as PWM, but it is not!
-#define TUBE_FLOW_VALVES_PIN 10
-#define PARALLEL_FLOW_VALVE_PIN 13
+#define TUBE_FLOW_VALVES_PIN 11
+#define PARALLEL_FLOW_VALVE_PIN 6
 
 // for controlling the Deuterium/Tungsten lamp
 // D18 = A0 on silkscreen
-#define LAMP_DB15_ENABLE_PIN 18
-// D19 = A1 on silkscreen
-#define LAMP_SHUTTER_CONTROL_PIN 19
+#define LAMP_UV_CONTROL_PIN 18
 // D20 = A2 on silkscreen
 #define LAMP_VIS_CONTROL_PIN 20
-// D21 = A3 on silkscreen
-#define LAMP_UV_CONTROL_PIN 21
+// D22 = A4 on silkscreen
+#define LAMP_SHUTTER_CONTROL_PIN 19
+// note GND and DB15 ENABLE should be connected to GND
+// and 5V for normal LED control on LH terminal block
+// note bottom output is 5V, second from bottom is GND!
 
 // for controlling the FOS-2-INL inline shutters
-#define GAD_ARM_SHUTTER_PIN 9
-#define REF_ARM_SHUTTER_PIN 7
-// we don't really need this tied to a pin per-se,
-// but we have it there to keep the gnd on the same connector block
-#define FOS_2_INL_GND_PIN 5
+#define GAD_ARM_SHUTTER_PIN 7
+#define REF_ARM_SHUTTER_PIN 4
 
 // we control the LED on/off states via an I2C controlled set of relays
 // we don't really need to define these, but just to know that they're used
 #define I2C_SCL_PIN 3
 #define I2C_SDA_PIN 2
-// they provide a library that defines a class to communicate with it
+
+// for reading in the temperature of the UV LED
+// D23 on silkscreen is A5
+#define LED_TEMP_PIN 23
+
+// for reading temperatures of the solenoid valves
+// D10 on silkscreen = A10
+#define SOL1_TEMP_PIN 10
+// D9 on silkscreen = A9
+#define SOL2_TEMP_PIN 9
+// D8 on silkscreen = A8
+#define SOL3_TEMP_PIN 8
+
+// the flow sensor is a digital IN, 5V when flow, 0V when none
+#define FLOW_SENSE_PIN 12
+
+// we have an audible buzzer that needs a PWM to sound
+#define BUZZER_PIN 5
+
+// ===========================
+
+// Grove provide a class to communicate with the multi-channel relay
 Multi_Channel_Relay relay;
 bool grove_connected = false;
+
 // define what's connected to each relay
 #define LED275_CH 1
 #define LEDW7E_CH 2
+#define PSU_CH 3
+#define SPARE_CH 4   // no official use for this yet
 
-// for reading in the temperature of the LED
-// D12 on silkscreen is A11
-#define LED_TEMP_PIN 12
-// FIXME we have two extra available analog pins that we could use
-// to read temperatures from the valves. buuut... we have 3 valves,
-// and the circuit would need modifying to provide current sources
-// to convert the thermistor values to voltages. For now, these are unused.
-// D22 = A4 on silkscreen
-#define TV1_PIN 22
-// D23 = A5 on silkscreen
-#define TV2_PIN 23
-
-// for reference, analogWrite is scaled 0-255
+// for PWM outputs the duty cycle is scaled 0-255
+// (we apply this via the command 'analogWrite')
 #define PWM_MAX 255
-// while analogRead runs 0-1023
+
+// meanwhile analogRead is 10 bits, spanning 0-1023
 #define ANALOG_READ_MAX 1023
 
-// PWM duty cycle for a 8V holding voltage based on 24V rail voltage
-constexpr int VALVE_DEFAULT_DUTY_CYCLE = 100.*(5./24.);
 
-// valves will be enabled first at full voltage (100% PWM duty cycle ~24V)
-// then after some delay reduced to a 'holding' level (33% duty cycle ~8V)
-// to reduce the heat dissipated by the valves and prevent over-heating.
-constexpr int VALVE_DEFAULT_HOLDING_DELAY = 3000; // [ms]
-int VALVE_HOLDING_DELAY = VALVE_DEFAULT_HOLDING_DELAY; // TODO add code to specify at runtime
-// we'll also need to note when each valve was enabled to known when to switch to holding.
+// valves will be enabled first at full voltage (100% PWM duty cycle)
+// then after some delay reduced to a 'holding' level to prevent
+// over-heating, which results in the valves getting stuck open.
+// power supply voltage
+int VALVE_PSU_VOLTS = 24; // [V]
+// how long to keep at full voltage before dropping to holding voltage
+int VALVE_HOLDING_DELAY = 3000; // [ms] TODO add code to change this at runtime.
+// holding voltage.
+int VALVE_HOLDING_VOLTAGE = 5;  // [V]. TODO add code to change this at runtime.
+// N.B. 5V may seem low but works and at 8V the solenoids get kinda hot
+int VALVE_DUTY_CYCLE = 100.*(double(VALVE_HOLDING_VOLTAGE)/double(VALVE_PSU_VOLTS));
+
+// we also need variables to keep track of when each valve was enabled to known when to switch to holding.
 unsigned long tube_valves_opened = 0;
 unsigned long parallel_valves_opened = 0;
+
+// for the buzzer, the applied voltage doesn't appear to be important,
+// affecting neither tone nor volume, but an AnalogWrite value of 200 works well.
+#define BUZZER_DUTY_CYCLE 200;
 
 const int verbosity=0;
 
 void Blink(int ontime=LONG_DELAY, int nblinks=1){
+	// FIXME since this isn't threaded calls to BLINK hold up the main thread
+	// which slows down the responsiveness of the arduino!
+	// however without doing it this way we can't reliably blink a fixed number of times
+	// as multiple calls to 'Blink' will overlap....
+	// i guess it's a bit moot as we can't distinguish blink loops anyway....
 	for(int i=0; i<nblinks; ++i){
 		digitalWrite(LED_BUILTIN, HIGH);
 		delay(ontime);
 		digitalWrite(LED_BUILTIN, LOW);
+	}
+	return;
+}
+
+void Buzz(int ontime=LONG_DELAY, int nbuzzes=1){
+	
+	for(int i=0; i<nblinks; ++i){
+		analogWrite(BUZZER_PIN, BUZZER_DUTY_CYCLE);
+		delay(ontime);
+		analogWrite(BUZZER_PIN, BUZZER_DUTY_CYCLE);
 	}
 	return;
 }
@@ -159,38 +190,63 @@ void setup() {
 	// 2 short blinks - we're beginning setup
 	Blink(SHORT_DELAY, 2);
 	
-	// setup the pins
+	// setup the pin modes
+	// ===================
 	pinMode(LED_BUILTIN, OUTPUT);
 	
-	// n.b., although we call 'AnalogWrite' to output PWM,
-	// the pin mode needs to be set to DIGITAL 
+	//  No need to configure these as PWM, just OUTPUT and use analogWrite to set value
 	pinMode(TUBE_FLOW_VALVES_PIN, OUTPUT);
 	pinMode(PARALLEL_FLOW_VALVE_PIN, OUTPUT);
 	
-	pinMode(LAMP_DB15_ENABLE_PIN, OUTPUT);
+	pinMode(BUZZER_PIN, OUTPUT);
+	
+	// shutter pins
+	pinMode(GAD_ARM_SHUTTER_PIN, OUTPUT);
+	pinMode(REF_ARM_SHUTTER_PIN, OUTPUT);
+	
+	// D2 lamp
+	//pinMode(LAMP_DB15_ENABLE_PIN, OUTPUT);
 	pinMode(LAMP_SHUTTER_CONTROL_PIN, OUTPUT);
 	pinMode(LAMP_VIS_CONTROL_PIN, OUTPUT);
 	pinMode(LAMP_UV_CONTROL_PIN, OUTPUT);
 	
-	pinMode(GAD_ARM_SHUTTER_PIN, OUTPUT);
-	pinMode(REF_ARM_SHUTTER_PIN, OUTPUT);
-	pinMode(FOS_2_INL_GND_PIN, OUTPUT);
-	
-	// set up temp monitoring pin as input
+	// set up temp monitoring pins as input
 	pinMode(LED_TEMP_PIN, INPUT);
+	pinMode(SOL0_TEMP_PIN, INPUT);
+	pinMode(SOL1_TEMP_PIN, INPUT);
+	pinMode(SOL2_TEMP_PIN, INPUT);
+	
+	// arduino micro provides 10-bit ADC resolution (1024) over a default range 0-5V.
+	// this range can be reduced with the analogReference command to increase resolution;
+	// see https://www.arduino.cc/reference/en/language/functions/analog-io/analogreference/
+	// note that this applies to ALL analog inputs! it is NOT specified per pin!
+	// the LED temperature sensor (MCP9701AT-E/LT) output ranges 400mV->2.8V over -10->125 C
+	// while the solenoid KTY thermistors span 1.37->1.99V over 20->70C for the used configuration.
+	// In both cases an input range of 2.56V ('INTERNAL') is ideal
+	// i believe that input voltages up to Vcc are safe even when the reference is configured below this
+	// and this does not affect digital IO on functionality on pins that can be configured for analog
+	// https://forum.arduino.cc/t/can-you-damage-the-adc-with-a-voltage-above-vref/232750/3
+	analogReference(INTERNAL);
+	
+	// and flow sensor pin
+	pinMode(FLOW_SENSE_PIN, INPUT);
 	
 	// initialise all outputs to low... is this best?
 	digitalWrite(LED_BUILTIN, LOW);
 	
 	digitalWrite(TUBE_FLOW_VALVES_PIN, LOW);
 	digitalWrite(PARALLEL_FLOW_VALVE_PIN, LOW);
-	digitalWrite(LAMP_DB15_ENABLE_PIN, LOW);
+	digitalWrite(BUZZER_PIN, LOW);
+	digitalWrite(GAD_ARM_SHUTTER_PIN, LOW);
+	digitalWrite(REF_ARM_SHUTTER_PIN, LOW);
+	//digitalWrite(LAMP_DB15_ENABLE_PIN, LOW);
 	digitalWrite(LAMP_SHUTTER_CONTROL_PIN, LOW);
 	digitalWrite(LAMP_UV_CONTROL_PIN, LOW);
 	digitalWrite(LAMP_VIS_CONTROL_PIN, LOW);
-	digitalWrite(GAD_ARM_SHUTTER_PIN, LOW);
-	digitalWrite(REF_ARM_SHUTTER_PIN, LOW);
-	digitalWrite(FOS_2_INL_GND_PIN, LOW);
+	
+
+// we have an audible buzzer that needs a PWM to sound
+#define BUZZER_PIN 5
 	
 	openSerial();
 	connectToGrove();
@@ -204,7 +260,7 @@ void DoQuit(){
 	Blink(LONG_DELAY, 5);
 	
 	// set all outputs to low
-	digitalWrite(LAMP_DB15_ENABLE_PIN, LOW);
+	//digitalWrite(LAMP_DB15_ENABLE_PIN, LOW);
 	digitalWrite(LAMP_SHUTTER_CONTROL_PIN, LOW);
 	digitalWrite(LAMP_UV_CONTROL_PIN, LOW);
 	digitalWrite(LAMP_VIS_CONTROL_PIN, LOW);
@@ -255,17 +311,38 @@ bool get_LED_state(int RELAY_CH){
 }
 
 double GetLEDTemp(){
-	// arduino micro provides 10-bit ADC resolution (1024) over a range 0-5V.
-	// (this range can be reduced with the analogReference command to increase resolution;
-	//  see https://www.arduino.cc/reference/en/language/functions/analog-io/analogreference/ )
-	// MCP9701AT-E/LT has 19mV/C or 1 degree per bit for an 8-bit ADC
-	// with output ranging 400mV-3V over 0-70 degrees (full range -40 -> 125C over ~0.25 -> 3.0V)
+	// MCP9701AT-E/LT has 19.5mV/C or 1 degree per bit for an 8-bit ADC
+	// with output ranging 400mV->2.8V over -10->125 C (fig 2-17)
 	// with +-2 degree accuracy without calibration
 	// based on Eq 4.1 (datasheet p10) Vout = Tc*T+V0
+	// we've configured the analogReference for a full range of 2.56V
 	static const double V0 = 400.;  // mV
 	static const double Tc = 19.5; // mV/C
-	double Vsense = 1000.*double(analogRead(LED_TEMP_PIN))*(5./1024.);
+	double Vsense = 1000.*double(analogRead(LED_TEMP_PIN))*(2.56/1024.);
 	return (Vsense-V0)/Tc;
+}
+
+double GetSolTemp(int PIN){
+	// the thermistors use an LM334 current source with 47Ohm set resistor
+	// to provide 1.4mA of current. Over the range 10-70C with this set current
+	// the thermistors have a voltage that fits well to V = 0.0121*Tc + 1.132
+	static const double V0 = 1.132;  // V
+	static const double Tc = 0.0121; // V/C
+	double Vsense = double(analogRead(PIN))*(2.56/1024.);
+	return (Vsense-V0)/Tc;
+}
+
+void switch_TUBEVALVES(bool on){
+	// n.b. the millis() function wraps after about 50 days, so is plenty long enough.
+	if(on) tube_valves_opened = millis();
+	else tube_valves_opened = 0;
+	return switch_VALVE(TUBE_FLOW_VALVES_PIN, on);
+}
+
+void switch_PARALLELVALVE(bool on){
+	if(on) parallel_valves_opened = millis();
+	else parallel_valves_opened = 0;
+	return switch_VALVE(PARALLEL_FLOW_VALVE_PIN, on);
 }
 
 void switch_VALVE(int PIN, bool on){
@@ -278,30 +355,24 @@ void switch_VALVE(int PIN, bool on){
 }
 
 void reduce_valve_to_holding(int PIN){
-	int dutycycle = VALVE_DEFAULT_DUTY_CYCLE;
-	// coerce to valid range
-	if(dutycycle>100) dutycycle = 100;
-	if(dutycycle<0) dutycycle = 0;
 	String valve = (PIN==PARALLEL_FLOW_VALVE_PIN) ? "Parallel" : "Tube";
-	if(verbosity) Serial.println("reducing "+valve+" voltage to holding duty cycle of "+dutycycle+"%");
+	if(verbosity) Serial.println("reducing "+valve+" voltage to holding duty cycle of "+VALVE_DUTY_CYCLE+"%");
 	// convert to DAC counts
-	int analogVal = (dutycycle/100.f) * PWM_MAX;
+	int analogVal = (VALVE_DUTY_CYCLE/100.f) * PWM_MAX;
 	// write
 	analogWrite(PIN, analogVal);
 	return;
 }
 
-void switch_TUBEVALVES(bool on, float dutycycle=VALVE_DEFAULT_DUTY_CYCLE){
-	// n.b. the millis() function wraps after about 50 days, so is plenty long enough.
-	if(on) tube_valves_opened = millis();
-	else tube_valves_opened = 0;
-	return switch_VALVE(TUBE_FLOW_VALVES_PIN, on);
-}
-
-void switch_PARALLELVALVE(bool on, float dutycycle=VALVE_DEFAULT_DUTY_CYCLE){
-	if(on) parallel_valves_opened = millis();
-	else parallel_valves_opened = 0;
-	return switch_VALVE(PARALLEL_FLOW_VALVE_PIN, on);
+int SetValveHoldingVoltage(double newVoltage){
+	VALVE_HOLDING_VOLTAGE = newVoltage;  // [V]
+	VALVE_DUTY_CYCLE = 100.*(double(VALVE_HOLDING_VOLTAGE)/double(VALVE_PSU_VOLTS));
+	
+	// coerce duty cycle to valid range
+	if(VALVE_DUTY_CYCLE>100) VALVE_DUTY_CYCLE = 100;
+	if(VALVE_DUTY_CYCLE<0) VALVE_DUTY_CYCLE = 0;
+	
+	return VALVE_DUTY_CYCLE;
 }
 
 void loop() {
@@ -327,22 +398,6 @@ void loop() {
 			command.trim();
 			if(verbosity) Serial.println("GOT KEY '"+key+"', command is now '"+command+"'");
 			
-			// get next value
-			String val("");
-			if(command.length()){
-				pos = command.indexOf(' ');
-				if(verbosity) Serial.println(String("val pos ")+pos);
-				if(pos>0){
-					val = command.substring(0,pos);
-					command = command.substring(pos+1);
-					command.trim();
-				} else {
-					val = command;
-					command = "";
-				}
-				if(verbosity) Serial.println("GOT VAL '"+val+"', command is now '"+command+"'");
-			}
-			
 			// make uppercase
 			key.toUpperCase(); // modifies string in-place
 			
@@ -351,7 +406,9 @@ void loop() {
 			// and get pin number for the former as it's simple
 			int pin=-1;
 			int type=-1;
+			
 			// type 0: ON/OFF via Relay
+			// ========================
 			if(key=="LED275"){
 				type=0;
 				pin=LED275_CH;
@@ -360,16 +417,18 @@ void loop() {
 				pin=LEDW7E_CH;
 			} else if(key.substring(0,5)=="RELAY"){
 				char relaynum = key[5];
-				if(!isDigit(relaynum)){
+				// relay commands use relays 1 - 4,
+				// but we'll accept sensible numbers 0-3.
+				if(!isDigit(relaynum) || relaynum>3){
 					Serial.println("Err: invalid relay '"+key+"'");
 					continue;
 				}
 				type=0;
-				// relay commands use relays 1 - 4, but we'll accept
-				// sensible numbers 0-3.
 				pin=atoi(&relaynum) + 1;
 			}
+			
 			// type 1: ON/OFF via digitalWrite
+			// ===============================
 			else if(key=="DEUTERIUM"){
 				type=1;
 				pin = LAMP_UV_CONTROL_PIN;
@@ -380,8 +439,11 @@ void loop() {
 			}
 			else if(key=="LAMP_DB15"){
 				// enables shutter & lamp control via DB15 on the back
-				type=1;
-				pin=LAMP_DB15_ENABLE_PIN;
+				//type=1;
+				//pin=LAMP_DB15_ENABLE_PIN;
+				// update: just connect to to 5V
+				Serial.println("Err: LAMP DB15 is always enabled when plugged in!");
+				continue;
 			}
 			else if(key=="LAMP_SHUTTER"){
 				type=1;
@@ -395,28 +457,26 @@ void loop() {
 				type=1;
 				pin=REF_ARM_SHUTTER_PIN;
 			}
-			// type 2: valve control, requires functions to lower to holding voltage
+			
+			// type 2: ON/OFF via valve function
+			// =================================
 			else if(key=="TUBE" || key=="PARALLEL"){
 				type=2;
 			}
-			// type 3: getters/misc
+			
+			// type 3: misc (no value)
+			// =======================
 			else if(key=="HELLO"){
 				type=3;
 				Serial.println("Hello!");
 			}
-			else if(key=="QUIT"){
+			else if(key=="BEEP"){
+				// FIXME add functionality for specifying beep patterns
 				type=3;
-				Serial.println("Quitting");
-				DoQuit();
-				break;
-			}
-			else if(key=="OFF"){
-				type=3;
-				Serial.println("Disabling all lights");
-				switch_all_LEDs_off();
-				break;
+				Buzz(LONG_DELAY, 1);
 			}
 			else if(key=="GROVE"){
+				// check grove connection status
 				type=3;
 				if(connectToGrove()){
 					Serial.println("OK");
@@ -427,8 +487,47 @@ void loop() {
 			else if(key=="LED_TEMP"){
 				type=3;
 				double temp = GetLEDTemp();
-				Serial.println(String{"LED Temp: "}+temp);
+				Serial.println(key+String{": "}+temp);
 			}
+			} else if(key.substring(0,3)=="SOL"){   // e.g. 'SOL3_TEMP'
+				char solnum = key[3];
+				// accept solenoid numbers 0-2
+				if(!isDigit(solnum) || solnum>3){
+					Serial.println("Err: invalid solenoid '"+key+"'");
+					continue;
+				}
+				type=3;
+				// thermistors 0-2 map to pins 8,9,10.
+				pin=atoi(&solnum) + SOL0_TEMP_PIN;
+				double temp = GetSolTemp(pin);
+				Serial.println(key+String{": "}+temp);
+			}
+			else if(key=="FLOW_SENSE"){
+				type=3;
+				// flow sensor is boolean only - either flow or none (not a flow rate)
+				int state = digitalRead(FLOW_SENSE_PIN);
+				Serial.println(key+String{": "}+state);
+			}
+			else if(key=="OFF"){
+				type=3;
+				Serial.println("Disabling all lights");
+				switch_all_LEDs_off();
+			}
+			else if(key=="QUIT"){
+				type=3;
+				Serial.println("Quitting");
+				DoQuit();
+				break;
+			}
+			
+			// type 4: misc (with value)
+			// =========================
+			else if(key=="VALVE_HOLDING_VOLTS"){
+				type=4;
+			}
+			
+			// unrecognised
+			// ============
 			else {
 				Serial.println("Err: Unknown command: '"+key+"'");
 				pos = command.indexOf(' ');
@@ -440,31 +539,62 @@ void loop() {
 				}
 				continue;
 			}
-			if(type!=3 && val!="ENABLE" && val!="DISABLE"){
-				Serial.println("Err: "+key+": Invalid value '"+val+"', use 'ENABLE' or 'DISABLE'");
-				continue;
-			} else if(type!=3) {
-				Serial.println("Setting "+key+" to "+val);
-			}
 			
 			Blink(LONG_DELAY, type);
 			
-			// parse, validate & enact command based on type
+			if(type!=3){
+				
+				// get corresponding value
+				String val("");
+				if(command.length()){
+					pos = command.indexOf(' ');
+					if(verbosity) Serial.println(String("val pos ")+pos);
+					if(pos>0){
+						val = command.substring(0,pos);
+						command = command.substring(pos+1);
+						command.trim();
+					} else {
+						val = command;
+						command = "";
+					}
+					if(verbosity) Serial.println("GOT VAL '"+val+"', command is now '"+command+"'");
+				}
+				
+				// check we have a value of ENABLE/DISABLE
+				if(type!=4 && val!="ENABLE" && val!="DISABLE"){ // types 0,1,2 take boolean vals
+					Serial.println("Err: "+key+": Invalid value '"+val+"', use 'ENABLE' or 'DISABLE'");
+					continue;
+				} else {
+					Serial.println("Setting "+key+" to "+val);
+				}
+			} // type 3 takes no val
+			
+			// enact command based on type
 			if(type==0) switch_LED(pin, (val=="ENABLE"));
 			
 			else if(type==1) digitalWrite(pin,(val=="ENABLE"));
 			
 			else if(type==2){
-				if(key=="TUBE"){
-					// TODO add support for specifying duty cycle
-					switch_TUBEVALVES(val=="ENABLE");
-				} else if(key=="PARALLEL"){
-					switch_PARALLELVALVE(val=="ENABLE");
-				}
+				if(key=="TUBE") switch_TUBEVALVES(val=="ENABLE");
+				if(key=="PARALLEL") switch_TUBEVALVES(val=="ENABLE");
 			}
 			
-		} // loop over key-value pairs
-	} // else nothing on serial port
+			else if(type==4){
+				// TODO generalise this for other commands? more robust parsing check?
+				double newvolts = atof(val);
+				if(newvolts<=0 || newvolts>24){
+					Serial.println("Err: bad new solenoid holding voltage '"+val+"'");
+				}
+				SetValveHoldingVoltage(newvolts);
+			}
+			
+			else {
+				Serial.println("Err: unhandled command '"+key+"'");
+			}
+			
+		} // loop over commands
+		
+	} // if serial data available
 	
 	// reduce valve voltages to holding if required
 	if((tube_valves_opened>0) && ((millis()-tube_valves_opened)>VALVE_HOLDING_DELAY)){
@@ -478,7 +608,10 @@ void loop() {
 		parallel_valves_opened = 0;
 	}
 	
-	delay(1000);
+	// on PCs we typically do not want to lock a CPU by looping as fast as possible,
+	// but this is a single-core, single app microprocessor... not really any reason not to.
+	//delay(100);
+	
 	
 	return;
 }
