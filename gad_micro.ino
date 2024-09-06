@@ -54,11 +54,11 @@
 
 // for reading temperatures of the solenoid valves
 // D10 on silkscreen = A10
-#define SOL1_TEMP_PIN 10
+#define SOL0_TEMP_PIN 10
 // D9 on silkscreen = A9
-#define SOL2_TEMP_PIN 9
+#define SOL1_TEMP_PIN 9
 // D8 on silkscreen = A8
-#define SOL3_TEMP_PIN 8
+#define SOL2_TEMP_PIN 8
 
 // the flow sensor is a digital IN, 5V when flow, 0V when none
 #define FLOW_SENSE_PIN 12
@@ -75,7 +75,7 @@ bool grove_connected = false;
 // define what's connected to each relay
 #define LED275_CH 1
 #define LEDW7E_CH 2
-#define PSU_CH 3
+#define PUMP_CH 3
 #define SPARE_CH 4   // no official use for this yet
 
 // for PWM outputs the duty cycle is scaled 0-255
@@ -104,7 +104,7 @@ unsigned long parallel_valves_opened = 0;
 
 // for the buzzer, the applied voltage doesn't appear to be important,
 // affecting neither tone nor volume, but an AnalogWrite value of 200 works well.
-#define BUZZER_DUTY_CYCLE 200;
+#define BUZZER_DUTY_CYCLE 200
 
 const int verbosity=0;
 
@@ -124,7 +124,7 @@ void Blink(int ontime=LONG_DELAY, int nblinks=1){
 
 void Buzz(int ontime=LONG_DELAY, int nbuzzes=1){
 	
-	for(int i=0; i<nblinks; ++i){
+	for(int i=0; i<nbuzzes; ++i){
 		analogWrite(BUZZER_PIN, BUZZER_DUTY_CYCLE);
 		delay(ontime);
 		analogWrite(BUZZER_PIN, BUZZER_DUTY_CYCLE);
@@ -412,10 +412,16 @@ void loop() {
 			if(key=="LED275"){
 				type=0;
 				pin=LED275_CH;
-			} else if(key=="WHITE"){
+			}
+			else if(key=="WHITE"){
 				type=0;
 				pin=LEDW7E_CH;
-			} else if(key.substring(0,5)=="RELAY"){
+			}
+			else if(key=="PUMP"){
+				type=0;
+				pin=PUMP_CH;
+			}
+			else if(key.substring(0,5)=="RELAY"){
 				char relaynum = key[5];
 				// relay commands use relays 1 - 4,
 				// but we'll accept sensible numbers 0-3.
@@ -489,7 +495,19 @@ void loop() {
 				double temp = GetLEDTemp();
 				Serial.println(key+String{": "}+temp);
 			}
-			} else if(key.substring(0,3)=="SOL"){   // e.g. 'SOL3_TEMP'
+			else if(key=="SOL_TEMPS"){
+				// we're probably going to want all of them
+				// response will be "SOL_TEMPS: T1,T2,T3"
+				String resp="SOL_TEMPS:";
+				for(int i=0; i<3; ++i){
+					pin=SOL0_TEMP_PIN+i;
+					double temp = GetSolTemp(pin);
+					if(i>0) resp=resp+",";
+					resp=resp+temp;
+				}
+				Serial.println(resp);
+			}
+			else if(key.substring(0,3)=="SOL"){   // e.g. 'SOL0_TEMP'
 				char solnum = key[3];
 				// accept solenoid numbers 0-2
 				if(!isDigit(solnum) || solnum>3){
@@ -498,7 +516,7 @@ void loop() {
 				}
 				type=3;
 				// thermistors 0-2 map to pins 8,9,10.
-				pin=atoi(&solnum) + SOL0_TEMP_PIN;
+				pin=SOL0_TEMP_PIN + atoi(&solnum);
 				double temp = GetSolTemp(pin);
 				Serial.println(key+String{": "}+temp);
 			}
@@ -542,10 +560,10 @@ void loop() {
 			
 			Blink(LONG_DELAY, type);
 			
+			String val("");
 			if(type!=3){
 				
 				// get corresponding value
-				String val("");
 				if(command.length()){
 					pos = command.indexOf(' ');
 					if(verbosity) Serial.println(String("val pos ")+pos);
@@ -564,13 +582,16 @@ void loop() {
 				if(type!=4 && val!="ENABLE" && val!="DISABLE"){ // types 0,1,2 take boolean vals
 					Serial.println("Err: "+key+": Invalid value '"+val+"', use 'ENABLE' or 'DISABLE'");
 					continue;
+				} else if(type==4 && val==""){
+					Serial.println("Err: no value for key '"+key+"'");
+					continue;
 				} else {
 					Serial.println("Setting "+key+" to "+val);
 				}
 			} // type 3 takes no val
 			
 			// enact command based on type
-			if(type==0) switch_LED(pin, (val=="ENABLE"));
+			if(type==0) switch_LED(pin,(val=="ENABLE"));
 			
 			else if(type==1) digitalWrite(pin,(val=="ENABLE"));
 			
@@ -581,7 +602,7 @@ void loop() {
 			
 			else if(type==4){
 				// TODO generalise this for other commands? more robust parsing check?
-				double newvolts = atof(val);
+				double newvolts = atof(val.c_str());
 				if(newvolts<=0 || newvolts>24){
 					Serial.println("Err: bad new solenoid holding voltage '"+val+"'");
 				}
