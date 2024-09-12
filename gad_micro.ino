@@ -34,10 +34,11 @@
 // D20 = A2 on silkscreen
 #define LAMP_VIS_CONTROL_PIN 20
 // D22 = A4 on silkscreen
-#define LAMP_SHUTTER_CONTROL_PIN 19
+#define LAMP_SHUTTER_CONTROL_PIN 22
 // note GND and DB15 ENABLE should be connected to GND
 // and 5V for normal LED control on LH terminal block
 // note bottom output is 5V, second from bottom is GND!
+//#define LAMP_DB15_ENABLE_PIN xxx
 
 // for controlling the FOS-2-INL inline shutters
 #define GAD_ARM_SHUTTER_PIN 7
@@ -53,12 +54,12 @@
 #define LED_TEMP_PIN 23
 
 // for reading temperatures of the solenoid valves
-// D10 on silkscreen = A10
-#define SOL0_TEMP_PIN 10
+// D8 on silkscreen = A8
+#define SOL0_TEMP_PIN 8
 // D9 on silkscreen = A9
 #define SOL1_TEMP_PIN 9
-// D8 on silkscreen = A8
-#define SOL2_TEMP_PIN 8
+// D10 on silkscreen = A10
+#define SOL2_TEMP_PIN 10
 
 // the flow sensor is a digital IN, 5V when flow, 0V when none
 #define FLOW_SENSE_PIN 12
@@ -127,7 +128,7 @@ void Buzz(int ontime=LONG_DELAY, int nbuzzes=1){
 	for(int i=0; i<nbuzzes; ++i){
 		analogWrite(BUZZER_PIN, BUZZER_DUTY_CYCLE);
 		delay(ontime);
-		analogWrite(BUZZER_PIN, BUZZER_DUTY_CYCLE);
+		analogWrite(BUZZER_PIN, 0);
 	}
 	return;
 }
@@ -228,6 +229,13 @@ void setup() {
 	// https://forum.arduino.cc/t/can-you-damage-the-adc-with-a-voltage-above-vref/232750/3
 	analogReference(INTERNAL);
 	
+	// analogRead returns garbage on the first read after changing the reference
+	// so read all our analog inputs once to get that out of the way
+	analogRead(LED_TEMP_PIN);
+	for(int i=0; i<3; ++i){
+		analogRead(SOL0_TEMP_PIN+i);
+	}
+	
 	// and flow sensor pin
 	pinMode(FLOW_SENSE_PIN, INPUT);
 	
@@ -243,10 +251,6 @@ void setup() {
 	digitalWrite(LAMP_SHUTTER_CONTROL_PIN, LOW);
 	digitalWrite(LAMP_UV_CONTROL_PIN, LOW);
 	digitalWrite(LAMP_VIS_CONTROL_PIN, LOW);
-	
-
-// we have an audible buzzer that needs a PWM to sound
-#define BUZZER_PIN 5
 	
 	openSerial();
 	connectToGrove();
@@ -329,6 +333,7 @@ double GetSolTemp(int PIN){
 	static const double V0 = 1.132;  // V
 	static const double Tc = 0.0121; // V/C
 	double Vsense = double(analogRead(PIN))*(2.56/1024.);
+	//Serial.println(String("sol pin ")+PIN+" cts: "+analogRead(PIN)+", volts: "+Vsense);
 	return (Vsense-V0)/Tc;
 }
 
@@ -384,18 +389,21 @@ void loop() {
 		// read the command
 		//String command = Serial.readString(); // reads until timeout
 		String command = Serial.readStringUntil('\n'); // reads until terminator, or timeout
-		command.trim();  // trim leading and trailing whitespace
 		
 		// loop over pairs of key and value
 		int pos = 0;
 		while(command.length()){
+			
+			// trim leading and trailing whitespace
+			command.trim();
 			
 			// get next key
 			pos = command.indexOf(' ');
 			if(verbosity) Serial.println(String("key pos ")+pos);
 			String key = command.substring(0,pos);
 			if(pos>0) command = command.substring(pos+1); // if no end specified, until end of string
-			command.trim();
+			else command="";
+			
 			if(verbosity) Serial.println("GOT KEY '"+key+"', command is now '"+command+"'");
 			
 			// make uppercase
@@ -422,15 +430,20 @@ void loop() {
 				pin=PUMP_CH;
 			}
 			else if(key.substring(0,5)=="RELAY"){
-				char relaynum = key[5];
-				// relay commands use relays 1 - 4,
-				// but we'll accept sensible numbers 0-3.
-				if(!isDigit(relaynum) || relaynum>3){
-					Serial.println("Err: invalid relay '"+key+"'");
-					continue;
-				}
 				type=0;
-				pin=atoi(&relaynum) + 1;
+				char relaychar = key[5];
+				if(!isDigit(relaychar)){
+					Serial.println("Err: invalid relay '"+key+"'");
+					type=4;
+				}
+				int relaynum = atoi(&relaychar);
+				// we'll accept sensible numbers 0-3.
+				if(relaynum>3){
+					Serial.println("Err: invalid relay '"+key+"'; relays are numbered 0-3");
+					type=4;
+				}
+				// but relay commands use 1 - 4
+				pin=relaynum + 1;
 			}
 			
 			// type 1: ON/OFF via digitalWrite
@@ -445,11 +458,10 @@ void loop() {
 			}
 			else if(key=="LAMP_DB15"){
 				// enables shutter & lamp control via DB15 on the back
-				//type=1;
-				//pin=LAMP_DB15_ENABLE_PIN;
-				// update: just connect to to 5V
-				Serial.println("Err: LAMP DB15 is always enabled when plugged in!");
-				continue;
+				Serial.println("Err: LAMP_DB15 is deprecated on this board!");
+				// for compatibility of calling code with other boards
+				// we still need to read out the corresponding enable/disable value
+				type=4;
 			}
 			else if(key=="LAMP_SHUTTER"){
 				type=1;
@@ -496,13 +508,14 @@ void loop() {
 				Serial.println(key+String{": "}+temp);
 			}
 			else if(key=="SOL_TEMPS"){
+				type=3;
 				// we're probably going to want all of them
 				// response will be "SOL_TEMPS: T1,T2,T3"
 				String resp="SOL_TEMPS:";
 				for(int i=0; i<3; ++i){
+					resp=resp+",";
 					pin=SOL0_TEMP_PIN+i;
 					double temp = GetSolTemp(pin);
-					if(i>0) resp=resp+",";
 					resp=resp+temp;
 				}
 				Serial.println(resp);
@@ -548,6 +561,8 @@ void loop() {
 			// ============
 			else {
 				Serial.println("Err: Unknown command: '"+key+"'");
+				// remove following key.... can't really do this if we may or may not have one
+				/*
 				pos = command.indexOf(' ');
 				if(pos>0){
 					command = command.substring(pos);
@@ -555,6 +570,7 @@ void loop() {
 				} else {
 					command = "";
 				}
+				*/
 				continue;
 			}
 			
@@ -563,7 +579,7 @@ void loop() {
 			String val("");
 			if(type!=3){
 				
-				// get corresponding value
+				// this key shoud have a following value - parse it
 				if(command.length()){
 					pos = command.indexOf(' ');
 					if(verbosity) Serial.println(String("val pos ")+pos);
@@ -597,20 +613,25 @@ void loop() {
 			
 			else if(type==2){
 				if(key=="TUBE") switch_TUBEVALVES(val=="ENABLE");
-				if(key=="PARALLEL") switch_TUBEVALVES(val=="ENABLE");
+				if(key=="PARALLEL") switch_PARALLELVALVE(val=="ENABLE");
+			}
+			
+			else if(type==3){
+				// nothing to do, already handled in-situ
 			}
 			
 			else if(type==4){
-				// TODO generalise this for other commands? more robust parsing check?
-				double newvolts = atof(val.c_str());
-				if(newvolts<=0 || newvolts>24){
-					Serial.println("Err: bad new solenoid holding voltage '"+val+"'");
+				if(key=="VALVE_HOLDING_VOLTS"){
+					double newvolts = atof(val.c_str());
+					if(newvolts<=0 || newvolts>24){
+						Serial.println("Err: bad new solenoid holding voltage '"+val+"'");
+					}
+					SetValveHoldingVoltage(newvolts);
 				}
-				SetValveHoldingVoltage(newvolts);
 			}
 			
 			else {
-				Serial.println("Err: unhandled command '"+key+"'");
+				Serial.println(String("Err: unhandled command type '")+type+"' for command '"+key+"'");
 			}
 			
 		} // loop over commands
