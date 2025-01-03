@@ -4,15 +4,17 @@
 
 int main(int argc, const char* argv[]){
 	
-	if(argc==1){
-		std::cerr<<"Usage: "<<argv[0]<<" com_port [verbosity]"<<std::endl;
+	if(argc==2 && ((strcmp(argv[1],"--help")==0) || (strcmp(argv[1],"-h")==0))){
+		std::cerr<<"Usage: "<<argv[0]<<" [com_port=/dev/ttyACM0] [verbosity=0]"<<std::endl;
 		return 0;
 	}
 	
 	std::cout<<"making ArduinoControl class"<<std::endl;
 	ArduinoControl ctrl;
 	std::cout<<"Initialising"<<std::endl;
-	if(argc==2){
+	if(argc==1){
+		ctrl.Initialise("/dev/ttyACM0");
+	} else if(argc==2){
 		ctrl.Initialise(argv[1]);
 	} else {
 		int verbosity = std::atoi(argv[2]);

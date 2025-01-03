@@ -74,10 +74,10 @@ Multi_Channel_Relay relay;
 bool grove_connected = false;
 
 // define what's connected to each relay
-#define LED275_CH 1
-#define LEDW7E_CH 2
-#define PUMP_CH 3
-#define SPARE_CH 4   // no official use for this yet
+#define LED275_CH 4
+#define LEDW7E_CH 3
+#define PUMP_CH 2
+#define SPARE_CH 1   // no official use for this yet
 
 // for PWM outputs the duty cycle is scaled 0-255
 // (we apply this via the command 'analogWrite')
